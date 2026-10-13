@@ -4,6 +4,16 @@
 
 > Status: **phase 1**. The game's archive format is fully decoded, all 2,513 textures can be exported, AI-upscaled and packed back into working `.MAS` archives, and there's a setup guide for running the game at modern resolutions today. The custom renderer (phase 2) is next.
 
+## HD textures
+
+The original textures next to the AI-upscaled versions (4×, Real-ESRGAN). Magenta is the game's transparency key; it's rebuilt at the new size so cut-outs stay clean.
+
+![Car livery: original vs upscaled](docs/screenshots/hd-car-before-after.jpg)
+
+![Sebring track textures: original vs upscaled](docs/screenshots/hd-track-before-after.jpg)
+
+The full set (2,179 car and track textures, 23 archives, about 430 MB) builds in about 11 minutes on CPU and much less on a GPU.
+
 ## How Sports Car GT is put together
 
 | Piece | What it is |
