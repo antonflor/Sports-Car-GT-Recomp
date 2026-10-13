@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+tools/models/
+build/
+# game data and generated packs never go in the repo
+*.mas
+*.MAS
+*.iso
+*.exe
+textures_original/
+textures_hd/
+hd_pack/
