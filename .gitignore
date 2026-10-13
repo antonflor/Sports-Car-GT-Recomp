@@ -10,3 +10,5 @@ build/
 textures_original/
 textures_hd/
 hd_pack/
+tools/fxc/*.exe
+!tools/fxc/fxc.exe
