@@ -19,7 +19,9 @@ Per texture:
     the nearest real colour before upscaling (so no pink fringes bleed in), and the key mask is
     rebuilt at the new size with smooth, exact edges.
   * Tileable textures (asphalt, grass, walls) are wrap-padded so they still tile without seams;
-    everything else (car liveries, signs) is edge-padded.
+    everything else (car liveries, signs) is edge-padded. The AI model smooths away the fine
+    noise of these surfaces, so the original's high-frequency detail and matching fine grain
+    are added back (seamlessly) to keep asphalt and grass from looking like plastic.
   * By default only the 3D textures are processed (car liveries in Cmaps and the track *MAP
     archives). Menu art, fonts, loading screens and the dash ship one image per screen
     resolution and are left alone unless you pass --include-ui.
@@ -30,6 +32,7 @@ import os
 import sys
 import time
 import urllib.request
+import zlib
 
 import numpy as np
 from PIL import Image
@@ -202,20 +205,77 @@ def upscale_mask(mask, size):
     return np.asarray(m) >= 128
 
 
-def process(net, rgb, device, half, max_out, passes):
+def blur(a, radius, wrap_y=True, wrap_x=True):
+    """Gaussian blur of a float image; an axis that tiles wraps around (no seams), others clamp."""
+    r = max(1, int(radius * 3))
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / radius) ** 2)
+    k /= k.sum()
+    out = a
+    for axis, wrap in ((0, wrap_y), (1, wrap_x)):
+        n = out.shape[axis]
+        idx = np.arange(-r, n + r)
+        idx = idx % n if wrap else np.clip(idx, 0, n - 1)
+        p = np.take(out, idx, axis=axis)
+        acc = np.zeros_like(out)
+        for i, w in enumerate(k):
+            acc += w * np.take(p, np.arange(i, i + n), axis=axis)
+        out = acc
+    return out
+
+
+def tiles(rgb):
+    """(tiles vertically, tiles horizontally): opposite edges continue into each other."""
+    a = rgb.astype(np.float32)
+    inner_x = np.abs(a[:, 1:] - a[:, :-1]).mean()
+    inner_y = np.abs(a[1:] - a[:-1]).mean()
+    return (np.abs(a[0] - a[-1]).mean() <= 2.0 * inner_y + 2,
+            np.abs(a[:, 0] - a[:, -1]).mean() <= 2.0 * inner_x + 2)
+
+
+def restore_surface(src, out, seed, detail=0.8, grain=0.7):
+    """Surfaces (asphalt, grass, gravel, concrete): the AI model smooths away their fine noise
+    and they turn plastic. When the upscale lost a good part of the original's texel-level
+    detail, put that detail back, plus fine grain at the new resolution with the original's
+    noise level. Seamless along the axes the texture tiles."""
+    h, w = out.shape[:2]
+    wy, wx = tiles(src)
+    s = src.astype(np.float32)
+    sigma = float((s - blur(s, 1.0, wy, wx)).std())  # texel-level noise of the original
+    if sigma < 1.0:
+        return out
+    small = np.asarray(Image.fromarray(out).resize((src.shape[1], src.shape[0]), Image.BOX)).astype(np.float32)
+    kept = float((small - blur(small, 1.0, wy, wx)).std()) / sigma
+    if kept > 0.75:
+        return out  # sharp artwork (signs, logos, liveries) came through: leave it alone
+    strength = min(1.0, (0.75 - kept) / 0.35)
+    up = np.asarray(Image.fromarray(src).resize((w, h), Image.LANCZOS)).astype(np.float32)
+    scale = w / src.shape[1]
+    hp = up - blur(up, scale * 0.75, wy, wx)
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, sigma * grain, (h, w, 1)).astype(np.float32)
+    res = out.astype(np.float32) + (hp * detail + noise) * strength
+    return np.clip(res + 0.5, 0, 255).astype(np.uint8)
+
+
+def process(net, rgb, device, half, max_out, passes, ai=None, seed=0):
     mask = (rgb == KEY).all(axis=2)
     keyed = mask.any()
     src = fill_key(rgb, mask) if keyed else rgb
     tile_wrap = is_tileable(src) and not keyed
-    out = src
-    for _ in range(max(1, passes)):
-        if max(out.shape[:2]) * 4 > max_out:
-            break
-        pad = max(4, min(out.shape[:2]) // 8)
-        out, _ = upscale_rgb(net, out, device, half, tile_wrap, pad)
-    if out is src:
-        return None
+    if ai is not None:
+        out = ai  # reuse an earlier AI pass (--reuse)
+    else:
+        out = src
+        for _ in range(max(1, passes)):
+            if max(out.shape[:2]) * 4 > max_out:
+                break
+            pad = max(4, min(out.shape[:2]) // 8)
+            out, _ = upscale_rgb(net, out, device, half, tile_wrap, pad)
+        if out is src:
+            return None
     out = out.copy()
+    if not keyed:
+        out = restore_surface(src, out, seed)
     stray = (out == KEY).all(axis=2)
     out[stray] = (254, 0, 254)          # real colours must never equal the key
     if keyed:
@@ -236,12 +296,13 @@ def main():
     ap.add_argument("--include-ui", action="store_true", help="also upscale menus, fonts, loading screens, dash")
     ap.add_argument("--overwrite", action="store_true", help="redo textures that already exist in output")
     ap.add_argument("--cpu", action="store_true", help="force CPU even if a GPU is available")
+    ap.add_argument("--reuse", default="", help="folder of an earlier run's output: reuse its AI results, redo only the post-processing")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     half = device.type == "cuda"
     print(f"device: {device}{' (fp16)' if half else ''}, model: {args.model}")
-    net = load_model(args.model, args.model_dir, device, half)
+    net = None if args.reuse else load_model(args.model, args.model_dir, device, half)
 
     files = []
     for root, _, names in os.walk(args.input):
@@ -265,7 +326,17 @@ def main():
         if min(rgb.shape[:2]) < args.min_size:
             skipped += 1
             continue
-        out = process(net, rgb, device, half, args.max_out, args.passes)
+        ai = None
+        if args.reuse:
+            prev = os.path.join(args.reuse, rel)
+            if not os.path.exists(prev):
+                skipped += 1
+                continue
+            ai = np.asarray(Image.open(prev).convert("RGB"))
+            # undo an earlier key pass so the mask is rebuilt exactly
+            ai = np.where((ai == KEY).all(axis=2, keepdims=True), 0, ai).astype(np.uint8) if (rgb == KEY).all(axis=2).any() else ai
+        seed = zlib.crc32(rel.replace("\\", "/").lower().encode())
+        out = process(net, rgb, device, half, args.max_out, args.passes, ai, seed)
         if out is None:
             skipped += 1
             continue

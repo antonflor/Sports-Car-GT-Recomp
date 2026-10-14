@@ -14,6 +14,10 @@
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#include <string.h>
+#define STB_DXT_IMPLEMENTATION
+#define STB_DXT_STATIC
+#include "stb_dxt.h"
 
 namespace scgt
 {
@@ -231,6 +235,44 @@ namespace scgt
         return t;
     }
 
+    // HD textures are block-compressed (DXT1 opaque, DXT5 with transparency): 4-8x less memory,
+    // which matters in a 32-bit game holding a whole track and grid of HD textures.
+    static IDirect3DTexture9* UploadCompressed(const std::vector<std::vector<u32>>& levels, const std::vector<std::pair<int, int>>& dims, bool alpha)
+    {
+        if ((dims[0].first & 3) || (dims[0].second & 3)) return Upload(levels, dims);
+        IDirect3DTexture9* t = nullptr;
+        if (FAILED(dev->CreateTexture(dims[0].first, dims[0].second, (UINT)levels.size(), 0, alpha ? D3DFMT_DXT5 : D3DFMT_DXT1, D3DPOOL_MANAGED, &t, nullptr)))
+            return Upload(levels, dims);
+        const int blockBytes = alpha ? 16 : 8;
+        for (size_t l = 0; l < levels.size(); l++)
+        {
+            D3DLOCKED_RECT lr;
+            if (FAILED(t->LockRect((UINT)l, &lr, nullptr, 0))) continue;
+            const int w = dims[l].first, h = dims[l].second;
+            const u32* src = levels[l].data();
+            u8 block[64];
+            for (int by = 0; by < h; by += 4)
+            {
+                u8* row = (u8*)lr.pBits + (size_t)(by / 4) * lr.Pitch;
+                for (int bx = 0; bx < w; bx += 4)
+                {
+                    for (int y = 0; y < 4; y++)
+                        for (int x = 0; x < 4; x++)
+                        {
+                            // small mip levels: repeat the edge texels to fill the 4x4 block
+                            const int sx = bx + x < w ? bx + x : w - 1, sy = by + y < h ? by + y : h - 1;
+                            const u32 c = src[(size_t)sy * w + sx];
+                            u8* d = &block[(y * 4 + x) * 4];
+                            d[0] = (c >> 16) & 255; d[1] = (c >> 8) & 255; d[2] = c & 255; d[3] = c >> 24;
+                        }
+                    stb_compress_dxt_block(row + (size_t)(bx / 4) * blockBytes, block, alpha ? 1 : 0, STB_DXT_NORMAL);
+                }
+            }
+            t->UnlockRect((UINT)l);
+        }
+        return t;
+    }
+
     static void FullChain(std::vector<std::vector<u32>>& levels, std::vector<std::pair<int, int>>& dims)
     {
         while (dims.back().first > 1 || dims.back().second > 1)
@@ -253,7 +295,12 @@ namespace scgt
         const std::string path = gameDir + name;
         int w = 0, h = 0, n = 0;
         stbi_uc* px = stbi_load(path.c_str(), &w, &h, &n, 4);
-        if (!px) { hdMissing[crc] = true; return false; }
+        if (!px)
+        {
+            hdMissing[crc] = true;
+            if (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES) Log("hd texture %08x: can't load %s", crc, stbi_failure_reason());
+            return false;
+        }
         std::vector<std::vector<u32>> levels(1, std::vector<u32>((size_t)w * h));
         bool alpha = false;
         for (int i = 0; i < w * h; i++)
@@ -274,10 +321,17 @@ namespace scgt
             }
             KeyMask(levels[0].data(), w, h);
         }
+        bool translucent = false; // any texel with alpha below 255 (cut-outs included)
+        for (u32 c : levels[0]) if ((c >> 24) != 255) { translucent = true; break; }
         std::vector<std::pair<int, int>> dims(1, { w, h });
         FullChain(levels, dims);
-        IDirect3DTexture9* t = Upload(levels, dims);
-        if (!t) return false;
+        IDirect3DTexture9* t = cfg.CompressHD ? UploadCompressed(levels, dims, translucent) : Upload(levels, dims);
+        if (!t)
+        {
+            Log("hd texture %08x: can't create %dx%d", crc, w, h);
+            hdMissing[crc] = true;
+            return false;
+        }
         if (e->bt.tex) e->bt.tex->Release();
         e->bt.tex = t;
         e->bt.realAlpha = alpha;

@@ -29,6 +29,7 @@ namespace scgt
         int MSAA = 4;
         int Filter2D = 1;              // smooth scaling of framebuffer writes (movies, menus)
         int ReplaceTextures = 1;
+        int CompressHD = 1;            // store HD textures DXT-compressed (much less memory)
         int DumpTextures = 0;
         int Trace = 0;
         int TexMemMB = 4;              // reported texture memory per TMU

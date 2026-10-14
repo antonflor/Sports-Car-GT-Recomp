@@ -124,7 +124,12 @@ API void __stdcall grBufferSwap(int interval)
     if (cfg.Trace >= 3) Log("swap %u", frameNo);
     Present();
     frameNo++;
-    if (cfg.Trace && frameNo % 100 == 0) Log("frame %u", frameNo);
+    if (cfg.Trace && frameNo % 100 == 0)
+    {
+        MEMORYSTATUS ms = { sizeof(ms) };
+        GlobalMemoryStatus(&ms);
+        Log("frame %u (address space free %u MB)", frameNo, (unsigned)(ms.dwAvailVirtual >> 20));
+    }
     if (cfg.Trace >= 2 && cfg.TraceFrom > 0 && frameNo >= (u32)cfg.TraceFrom + 2) cfg.Trace = 1; // detailed trace done
     if (cfg.Trace && frameNo % 30 == 0)
     {

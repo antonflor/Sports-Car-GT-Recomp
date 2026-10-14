@@ -46,6 +46,7 @@ namespace scgt
         cfg.Gamma = ReadInt("Gamma", cfg.Gamma, ini);
         cfg.LodBias = ReadFloat("LodBias", cfg.LodBias, ini);
         cfg.TraceFrom = ReadInt("TraceFrom", cfg.TraceFrom, ini);
+        cfg.CompressHD = ReadInt("CompressHD", cfg.CompressHD, ini);
         if (cfg.TexMemMB < 2) cfg.TexMemMB = 2;
         if (cfg.TexMemMB > 64) cfg.TexMemMB = 64;
     }
