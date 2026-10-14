@@ -40,6 +40,11 @@ namespace scgt
     static IDirect3DTexture9* lfbTex = nullptr;
     static int lfbTexW = 0, lfbTexH = 0;
     static bool anyPending = false;
+    // What the game last read back, at full precision. Writes that put the same 16-bit values
+    // back (the menu cursor saving and restoring what's under it) restore these colours, so a
+    // restored patch matches its surroundings exactly instead of being rounded to 16 bits.
+    static std::vector<u32> lastRead;
+    static bool lastReadFromRT = false; // the last read came (partly) from the render target
 
     static void EnsureShadows()
     {
@@ -112,7 +117,7 @@ namespace scgt
         Shadow& s = shadows[BufferIndex(buffer)];
         const int W = out.logicalW, H = out.logicalH;
         const int bpp = Bytes(mode);
-        int count = 0;
+        int count = 0, restored = 0, mx0 = W, my0 = H, mx1 = -1, my1 = -1;
         const u32 g = ++gen;
         for (int row = 0; row < h; row++)
         {
@@ -125,9 +130,14 @@ namespace scgt
                 if (tx < 0 || tx >= W) continue;
                 const u32 px = bpp == 4 ? ((const u32*)line)[col] : ((const u16*)line)[col];
                 bool written;
-                const u32 c = ToArgb(px, mode, &written);
+                u32 c = ToArgb(px, mode, &written);
                 if (!written) continue;
                 const size_t i = (size_t)ty * W + tx;
+                if (lastRead.size() == (size_t)W * H && To565(c) == To565(lastRead[i])) { c = lastRead[i]; restored++; }
+                if (tx < mx0) mx0 = tx;
+                if (tx > mx1) mx1 = tx;
+                if (ty < my0) my0 = ty;
+                if (ty > my1) my1 = ty;
                 s.pix[i] = c;
                 s.mask[i] = 1;
                 s.pending[i] = 1;
@@ -137,6 +147,18 @@ namespace scgt
                 if (ty < s.y0) s.y0 = ty;
                 if (ty > s.y1) s.y1 = ty;
                 count++;
+            }
+        }
+        // In menus, a solid block that only puts back what the game read (the cursor restoring
+        // the background) is restored from the full-resolution copy of that read.
+        if (count && restored == count && !frameHas3D && count == (mx1 - mx0 + 1) * (my1 - my0 + 1) && lastReadFromRT)
+        {
+            LfbFlush();
+            if (RestoreSaved(buffer, mx0, my0, mx1, my1))
+            {
+                for (int yy = my0; yy <= my1; yy++)
+                    for (int xx = mx0; xx <= mx1; xx++) s.pending[(size_t)yy * W + xx] = 0;
+                count = 0;
             }
         }
         if (count)
@@ -440,12 +462,16 @@ namespace scgt
         if (!needRT)
         {
             px = s.pix;
+            lastRead = px;
+            lastReadFromRT = false;
             return true;
         }
         Flush();
         LfbFlush();
         if (!ReadBuffer(buffer, px)) return false;
         for (size_t i = 0; i < n; i++) if (Exact(s, i, W)) px[i] = s.pix[i]; // exact where the game wrote last
+        lastRead = px;
+        lastReadFromRT = true;
         return true;
     }
 
@@ -584,6 +610,7 @@ namespace scgt
     void LfbRelease()
     {
         if (edgeTex) { edgeTex->Release(); edgeTex = nullptr; }
+        lastRead.clear();
         if (lfbTex) { lfbTex->Release(); lfbTex = nullptr; }
         lfbTexW = lfbTexH = 0;
         for (auto& s : shadows) { s.pix.clear(); s.mask.clear(); s.pending.clear(); s.pixGen.clear(); s.tileGen.clear(); }

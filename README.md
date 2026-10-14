@@ -1,49 +1,68 @@
+![Sports Car GT: 2026 Edition](docs/screenshots/banner.jpg)
+
 # Sports Car GT: 2026 Edition
 
-**Sports Car GT** is the GT racing sim Image Space Incorporated made for Electronic Arts in 1999 (PC, v1.551). This project brings it to modern Windows with HD resolution, widescreen and AI-upscaled textures, the same way [4x4 Evolution: 2026 Edition](https://github.com/antonflor/4x4-Evo-2026-Recomp) did for 4x4 Evolution.
+**Sports Car GT** is the GT racing sim Image Space Incorporated made for Electronic Arts in 1999. This project brings the PC version (1.551) to modern Windows in native HD and true widescreen, with AI-upscaled textures — the same idea as [4x4 Evolution: 2026 Edition](https://github.com/antonflor/4x4-Evo-2026-Recomp).
 
-> Status: **phase 1**. The game's archive format is fully decoded, all 2,513 textures can be exported, AI-upscaled and packed back into working `.MAS` archives, and there's a setup guide for running the game at modern resolutions today. The custom renderer (phase 2) is next.
+The heart of it is **scgt2026**, a renderer written for this game. It replaces the game's 3dfx Glide driver (`glide2x.dll`) and draws with Direct3D 9. The exe isn't changed on disk. It adds:
 
-## HD textures
+- native-resolution output (1080p, 1440p, 4K) in a borderless window
+- true widescreen (Hor+), with the race HUD at the screen edges
+- a widescreen cockpit: the dash stays as drawn, its roof and door panel continue to the screen edges, the side windows open onto the wider view
+- HD texture replacement in 32-bit colour, with a full AI-upscaled pack for every car and track
+- 4× MSAA, 16× anisotropic filtering, trilinear filtering, vsync
 
-The original textures next to the AI-upscaled versions (4×, Real-ESRGAN). Magenta is the game's transparency key; it's rebuilt at the new size so cut-outs stay clean.
+## Screenshots
 
-![Car livery: original vs upscaled](docs/screenshots/hd-car-before-after.jpg)
+All at 1600×900.
 
-![Sebring track textures: original vs upscaled](docs/screenshots/hd-track-before-after.jpg)
+### Widescreen
 
-The full set (2,179 car and track textures, 23 archives, about 430 MB) builds in about 11 minutes on CPU and much less on a GPU.
+The extra width shows more of the track at the sides. Nothing is stretched; the HUD moves out to the edges.
 
-## How Sports Car GT is put together
+![Classic 4:3 vs true widescreen](docs/screenshots/widescreen-before-after.jpg)
+
+### Cockpit
+
+The dash view in widescreen. The gauges, needles, gear readout and mirror stay exactly where the cockpit art puts them.
+
+![Dash view in widescreen](docs/screenshots/cockpit.jpg)
+
+### HD textures
+
+The same frame with the original textures and with the HD pack: sharper liveries, signs and track-side detail; asphalt and grass keep their grain.
+
+![Original vs HD textures](docs/screenshots/hd-before-after.jpg)
+
+### Tracks
+
+![Tracks](docs/screenshots/tracks.jpg)
+
+## How it works
 
 | Piece | What it is |
 |---|---|
-| `Spcar.exe` | The game. 32-bit, 1.551 build, links `DDRAW.dll` directly and loads `GLIDE2X.DLL` at runtime |
-| Renderers | Two built in: **3dfx Glide 2.x** (looked up function by function with `GetProcAddress`) and **Direct3D (DirectX 6)** |
-| `MAS\*.MAS` | ISI archives: car shapes (`CDB.MAS`), car liveries (`Cmaps.mas`), track shapes (`<track>.mas`) and track textures (`<track>MAP.MAS`), menus, fonts, loading screens |
-| `DAT\SCENE.MAS` | Track scene/AI files (text) |
-| `DAT\VEHICLE.MAS` | Car physics/setup files (text) |
+| `Spcar.exe` | The game, 32-bit, 1.551. It has two renderers: 3dfx Glide 2 (loaded at runtime from `glide2x.dll`) and Direct3D 6 |
+| `glide2x.dll` (scgt2026) | All 121 Glide 2 functions the game resolves, on Direct3D 9: an uber-shader for Glide's colour/alpha/texture combiners, the W-buffer and fog table, colour keying, emulated texture memory, and exact emulation of the frame buffer the game writes its menus, movies and cockpit into |
+| `MAS\*.MAS` | ISI archives: car shapes and liveries, track shapes and textures, menus, fonts, the cockpit. Format documented in [`tools/mas.py`](tools/mas.py) |
 
-The `.MAS` format and the texture format inside it are documented at the top of [`tools/mas.py`](tools/mas.py). In short: a directory of 32-byte entries, then the payload; textures are a 16-byte header (width, height, compressed, paletted) followed by zlib-compressed 24-bit RGB, top-down. Pure magenta (255, 0, 255) is the transparency colour key. The game converts every texture to 16-bit (RGB555/565) when it loads it.
+- **Resolution.** Glide hands over every vertex already in screen space, so the renderer simply draws the game's 640×480 (or 800×600, 1024×768) frame at the monitor's resolution. 3D is rasterized at full detail; frame-buffer art (menus, movies, cockpit) is scaled with filtering.
+- **Widescreen.** The game's view setup (`View::SetFov`) is hooked in memory: full-screen views get a wider horizontal field of view, the same vertical one (Hor+), and the renderer spreads that view across the screen. Smaller views (the rear-view mirror) keep theirs. The 2D layer stays 4:3; in races its blocks are anchored to the nearest screen edge. The hook checks the exact code bytes of 1.551 and leaves any other build in 4:3.
+- **Cockpit.** The dash view is a 640×480 cockpit image the game writes into the frame buffer — most of it once, the windshield frame every frame. The renderer recognises it, keeps it and everything on it in the 4:3 area, and extends its outer columns (from `DASH.MAS`) into the side areas: the roof and door panel continue, the side-window band stays open onto the wider 3D view.
+- **HD textures.** Every texture upload is identified by a CRC of the bytes the game uploads; `textures\<crc>.png` replaces it at any size, in 32-bit colour, compressed to DXT in memory (the game is 32-bit, and a grid of HD cars plus a track would otherwise run it out of address space).
 
-## Plan
+## Install
 
-| Phase | What you get | State |
-|---|---|---|
-| **1. Tools + HD textures** | Export / upscale / repack every texture. Run the game through dgVoodoo2 at native resolution with MSAA and anisotropic filtering. | ✅ tools done, test pack ready for in-game check |
-| **2. `scgt2026` renderer** | A drop-in `glide2x.dll` written for this game (Glide 2 → Direct3D 11): native-resolution output, true Hor+ widescreen (in-memory patch of the camera, HUD moved to the edges), 32-bit HD texture replacement by name + CRC at upload time (gets around the game's 256×256 / 16-bit texture path), 16× AF, MSAA, vsync, borderless window, texture dumping | next |
-| **3. Installer** | All-in-one Inno Setup installer like the 4x4 one (game files from a personal copy, so the repo stays **private**) | later |
+You need your own copy of the game (the CD or ISO) and the official 1.551 patch. The install kit and its instructions are in [`dist/`](dist/README.md): one double-click installs the game from your disc, patches it, and adds the renderer and HD textures.
 
-Why Glide for phase 2: the Glide 2 API is small (about 100 functions), every vertex arrives already in screen space, and every texture goes through one upload call (`grTexDownloadMipMap`). That makes resolution scaling, widescreen and texture replacement much simpler and more reliable than wrapping the DirectX 6 path.
+## Build
 
-## Layout
+```
+make            # needs i686-w64-mingw32-g++ (Linux/WSL: apt install g++-mingw-w64-i686)
+make shaders    # only after editing renderer/shaders.hlsl (runs fxc through Wine)
+```
 
-| Path | What it is |
-|---|---|
-| `tools/mas.py` | MAS archive library + CLI (`list`, `extract`, `pack`). Round-trips all 65 retail archives byte-for-byte |
-| `tools/mas_textures.py` | `export` every texture to PNG, `import` replacement PNGs into new MAS archives |
-| `tools/upscale_textures.py` | Real-ESRGAN upscaler with colour-key handling and seamless tiling |
-| `docs/SETUP.md` | Running the game on Windows 10/11 today (dgVoodoo2) and installing the HD texture pack |
+Output: `build/glide2x.dll`. Then `python tools/make_kit.py <kit> --game "<installed game>" --textures <pack> --patch Patch-1551a.zip` assembles the install kit.
 
 ## HD texture workflow
 
@@ -53,18 +72,28 @@ pip install pillow numpy
 
 python tools\mas_textures.py export "C:\Games\Sports Car GT" textures_original
 python tools\upscale_textures.py textures_original textures_hd
-python tools\mas_textures.py import "C:\Games\Sports Car GT" textures_hd hd_pack
+python tools\mas_textures.py glide "C:\Games\Sports Car GT" textures_hd "C:\Games\Sports Car GT\textures"
 ```
 
-Then back up `C:\Games\Sports Car GT\MAS` and copy `hd_pack\MAS\*` over it.
-
-- `--match Cmaps/01` upscales one car only (car #01), `--match SEBAMAP` one track only.
-- `--model x4plus` for the sharper (heavier) model.
+- `--match Cmaps/01` does one car (car #01), `--match SEBAMAP` one track.
+- `--model x4plus` for the sharper, heavier model. `--reuse <earlier output>` redoes only the post-processing.
 - Menus, fonts, loading screens and the dash are skipped by default (the game ships one image per screen resolution for those); `--include-ui` includes them.
-- `import --max-size 256` caps replacements at 256×256 if the engine turns out not to accept larger textures (that still upscales every texture smaller than 256).
+- Cut-outs (wheel arches, trees, fences, flags, spectators) use pure magenta as the transparency key: it's filled with neighbouring colours before upscaling, so it can't bleed into the edges, and rebuilt at the new size with smooth edges.
+- Surfaces whose fine noise the model smooths away (asphalt, grass, gravel, brick) get the original's detail and matching fine grain back, seamless along the axes they tile.
+- Textures are stored B,G,R in the archives; the game converts them to RGB565 when it uploads them, which is what the CRC is taken over (`mas.game_rgb565`).
+- `mas_textures.py import` instead writes new `.MAS` archives with the HD textures inside, for other renderers.
 
-Keyed (transparent) textures — wheel arches, trees, fences, flags, spectators — are handled explicitly: the magenta is filled with neighbouring colours before upscaling so it can't bleed into the edges, and the mask is rebuilt at the new size with smooth edges.
+## Layout
+
+| Path | What it is |
+|---|---|
+| `renderer/` | scgt2026 source (C++20, MinGW-w64 i686): Glide exports, D3D9 device, combiner shaders, textures, frame buffer emulation, widescreen patch |
+| `tools/mas.py` | MAS archive library + CLI (`list`, `extract`, `pack`); round-trips all 65 retail archives byte-for-byte |
+| `tools/mas_textures.py` | `export` textures to PNG, `glide` HD pack for the renderer, `import` into MAS archives |
+| `tools/upscale_textures.py` | Real-ESRGAN upscaler with colour-key handling, seamless tiling and surface detail restoration |
+| `tools/make_kit.py` | Assembles the install kit |
+| `dist/` | Installer, uninstaller, settings, file manifest and the kit README |
 
 ## Game files
 
-No game files are in this repo. You need your own copy of Sports Car GT (full install) with the 1.551 patch.
+No game files are in this repository. The install kit contains the official 1.551 patch, the two runtime DLLs the original setup unpacks, and the HD textures derived from the game's own textures, so the repository and its releases stay **private**.

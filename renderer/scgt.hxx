@@ -124,6 +124,7 @@ namespace scgt
     struct HudBox { float x0, y0, x1, y1; };
     extern std::vector<HudBox> hudCenter, hudCenterPrev;
     bool ReadBuffer(int buffer, std::vector<u32>& pixels); // logical-size ARGB readback
+    bool RestoreSaved(int buffer, int x0, int y0, int x1, int y1);
 
     // ---- drawing -----------------------------------------------------------------------
     void DrawTriangle(const GrVertex* a, const GrVertex* b, const GrVertex* c);

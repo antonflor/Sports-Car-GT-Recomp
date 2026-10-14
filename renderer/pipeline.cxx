@@ -307,7 +307,10 @@ namespace scgt
     // Called once per frame (before present): decide whether the next frame is a race view.
     void EndFrame()
     {
+        const bool was = frameHas3D;
         frameHas3D = (covX1 - covX0) >= out.logicalW * 0.9f && (covY1 - covY0) >= out.logicalH * 0.4f;
+        if (cfg.Trace && was != frameHas3D)
+            Log("3D view %s (coverage x %.0f-%.0f y %.0f-%.0f)", frameHas3D ? "on" : "off", covX0, covX1, covY0, covY1);
         covX0 = covY0 = 1e9f;
         covX1 = covY1 = -1e9f;
         subPrevX0 = subX0; subPrevX1 = subX1;

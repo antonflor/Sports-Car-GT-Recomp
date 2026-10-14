@@ -18,6 +18,9 @@ namespace scgt
     static IDirect3DSurface9* frontSurf = nullptr;
     static IDirect3DTexture9* readTex = nullptr;     // logical-size readback
     static IDirect3DSurface9* readSurf = nullptr;
+    static IDirect3DTexture9* savedTex = nullptr;   // full-resolution copy of a buffer as the game last read it
+    static IDirect3DSurface9* savedSurf = nullptr;
+    static bool savedValid = false;
     static IDirect3DSurface9* readSys = nullptr;
     static IDirect3DVertexShader9* blitVS = nullptr;
     static IDirect3DPixelShader9* blitPS = nullptr;
@@ -121,6 +124,9 @@ namespace scgt
         dev->CreateTexture(out.logicalW, out.logicalH, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &readTex, nullptr);
         if (readTex) readTex->GetSurfaceLevel(0, &readSurf);
         dev->CreateOffscreenPlainSurface(out.logicalW, out.logicalH, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &readSys, nullptr);
+        if (SUCCEEDED(dev->CreateTexture(out.width, out.height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &savedTex, nullptr)))
+            savedTex->GetSurfaceLevel(0, &savedSurf);
+        savedValid = false;
         Log("targets %dx%d msaa %d depth %d", out.width, out.height, (int)ms, (int)depthFormat);
         dev->SetDepthStencilSurface(depth);
         for (int i = 0; i < 2; i++)
@@ -136,6 +142,9 @@ namespace scgt
     static void ReleaseTargets()
     {
         if (readSys) { readSys->Release(); readSys = nullptr; }
+        if (savedSurf) { savedSurf->Release(); savedSurf = nullptr; }
+        if (savedTex) { savedTex->Release(); savedTex = nullptr; }
+        savedValid = false;
         if (readSurf) { readSurf->Release(); readSurf = nullptr; }
         if (readTex) { readTex->Release(); readTex = nullptr; }
         if (frontSurf) { frontSurf->Release(); frontSurf = nullptr; }
@@ -452,11 +461,24 @@ namespace scgt
         InvalidateState();
     }
 
+    // Put back, at full resolution, a logical rectangle as it was when the game last read the
+    // buffer (the menu cursor restoring what was under it).
+    bool RestoreSaved(int buffer, int x0, int y0, int x1, int y1)
+    {
+        if (!dev || !savedValid) return false;
+        const float ox0 = x0 * out.scaleX + out.offsetX, oy0 = y0 * out.scaleY + out.offsetY;
+        const float ox1 = (x1 + 1) * out.scaleX + out.offsetX, oy1 = (y1 + 1) * out.scaleY + out.offsetY;
+        DrawTexture(savedTex, buffer, (float)x0, (float)y0, (float)(x1 - x0 + 1), (float)(y1 - y0 + 1),
+                    ox0 / out.width, oy0 / out.height, ox1 / out.width, oy1 / out.height, false);
+        return true;
+    }
+
     bool ReadBuffer(int buffer, std::vector<u32>& pixels)
     {
         if (!dev || !readSurf || !readSys) return false;
         Flush();
         dev->StretchRect(TargetSurface(buffer), nullptr, frontSurf, nullptr, D3DTEXF_NONE); // resolve (the display copy is rebuilt at every present)
+        savedValid = savedSurf && SUCCEEDED(dev->StretchRect(frontSurf, nullptr, savedSurf, nullptr, D3DTEXF_NONE));
         RECT src = { (LONG)out.offsetX, (LONG)out.offsetY, (LONG)(out.offsetX + out.logicalW * out.scaleX), (LONG)(out.offsetY + out.logicalH * out.scaleY) };
         HRESULT hr = dev->StretchRect(frontSurf, &src, readSurf, nullptr, D3DTEXF_LINEAR);
         if (FAILED(hr)) Log("ReadBuffer: StretchRect %08x", (unsigned)hr);
