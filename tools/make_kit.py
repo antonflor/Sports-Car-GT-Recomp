@@ -24,7 +24,7 @@ def main():
     ap.add_argument("--game", required=True, help="an installed Sports Car GT (for Mss32.dll / Smackw32.dll)")
     ap.add_argument("--textures", default="", help="HD texture pack (<crc>.png files, from mas_textures.py glide)")
     ap.add_argument("--patch", default="", help="Patch-1551a.zip")
-    ap.add_argument("--chunk", type=int, default=28, help="max size of each texture zip, MB")
+    ap.add_argument("--chunk", type=int, default=14, help="max size of each texture zip, MB")
     a = ap.parse_args()
 
     os.makedirs(a.out, exist_ok=True)
