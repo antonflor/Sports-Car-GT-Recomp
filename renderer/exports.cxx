@@ -38,7 +38,7 @@ static void FillHardware(GrHwConfiguration* hw)
     memset(hw, 0, sizeof(*hw));
     hw->num_sst = 1;
     hw->SSTs[0].type = 0; // GR_SSTTYPE_VOODOO: the game only accepts Voodoo Graphics / Rush
-    hw->SSTs[0].VoodooConfig.fbRam = 4;
+    hw->SSTs[0].VoodooConfig.fbRam = 8; // enough frame buffer for the game to offer 1024x768
     hw->SSTs[0].VoodooConfig.fbiRev = 2;
     hw->SSTs[0].VoodooConfig.nTexelfx = 1;
     hw->SSTs[0].VoodooConfig.sliDetect = FALSE;
@@ -125,6 +125,7 @@ API void __stdcall grBufferSwap(int interval)
     Present();
     frameNo++;
     if (cfg.Trace && frameNo % 100 == 0) Log("frame %u", frameNo);
+    if (cfg.Trace >= 2 && cfg.TraceFrom > 0 && frameNo >= (u32)cfg.TraceFrom + 2) cfg.Trace = 1; // detailed trace done
     if (cfg.Trace && frameNo % 30 == 0)
     {
         // debugging aid: create "trace_now" in the game folder to trace the next frames in detail
@@ -132,7 +133,7 @@ API void __stdcall grBufferSwap(int interval)
         if (GetFileAttributesA(f.c_str()) != INVALID_FILE_ATTRIBUTES)
         {
             DeleteFileA(f.c_str());
-            cfg.Trace = 2;
+            cfg.Trace = 3;
             cfg.TraceFrom = (int)frameNo + 1;
             DebugSnapshot(frameNo);
         }
@@ -277,7 +278,9 @@ API void __stdcall grGlideSetState(const void* state)
 // ---- drawing -----------------------------------------------------------------------------
 static void TraceVerts(const char* what, int n, const GrVertex* const* v)
 {
-    if (!(cfg.Trace >= 2 && frameNo >= (u32)cfg.TraceFrom && frameNo < (u32)cfg.TraceFrom + 2) || triLogged++ > 60) return;
+    if (!(cfg.Trace >= 2 && frameNo >= (u32)cfg.TraceFrom && frameNo < (u32)cfg.TraceFrom + 2)) return;
+    if (v[0]->oow < 0.5f && triLogged > 40) return;
+    if (triLogged++ > 4000) return;
     char buf[1024]; int o = sprintf(buf, "%s n=%d:", what, n);
     for (int i = 0; i < n && i < 4; i++)
         o += sprintf(buf + o, " (%.1f,%.1f ooz %.1f oow %.5f rgba %.0f,%.0f,%.0f,%.0f st %.2f,%.2f)", v[i]->x, v[i]->y, v[i]->ooz, v[i]->oow, v[i]->r, v[i]->g, v[i]->b, v[i]->a, v[i]->tmuvtx[0].sow, v[i]->tmuvtx[0].tow);

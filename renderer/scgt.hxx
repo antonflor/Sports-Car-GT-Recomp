@@ -113,7 +113,15 @@ namespace scgt
     void SetRenderBuffer(int buffer);
     IDirect3DSurface9* TargetSurface(int buffer);
     void DrawFullscreenTexture(IDirect3DTexture9* tex, int buffer, float x, float y, float w, float h, bool keyed);
-    void DrawTexture(IDirect3DTexture9* tex, int buffer, float x, float y, float w, float h, float u0, float v0, float u1, float v1, bool keyed);
+    void DrawTexture(IDirect3DTexture9* tex, int buffer, float x, float y, float w, float h, float u0, float v0, float u1, float v1, bool keyed, float shiftX = 0.0f);
+    extern bool frameHas3D;   // the game is showing a full-screen 3D view (race), decided per frame
+    extern bool cockpitView;  // a cockpit image covers the screen (dash view): its 2D stays 4:3, sides extended
+    extern bool subView;      // drawing a second 3D view in this frame (rear-view mirror)
+    void NoteCockpit();       // lfb.cxx: a cockpit-sized frame-buffer image was drawn
+    void NoteClear();         // a buffer clear: after 3D was drawn it starts a sub-view
+    void EndFrame();
+    struct HudBox { float x0, y0, x1, y1; };
+    extern std::vector<HudBox> hudCenter, hudCenterPrev;
     bool ReadBuffer(int buffer, std::vector<u32>& pixels); // logical-size ARGB readback
 
     // ---- drawing -----------------------------------------------------------------------
@@ -150,11 +158,18 @@ namespace scgt
     FxBool LfbWriteRegion(int buffer, int x, int y, int srcFormat, int w, int h, int stride, const void* data);
     FxBool LfbReadRegion(int buffer, int x, int y, int w, int h, int stride, void* data);
     void LfbFlush();
+    void DrawCockpitSides();
+    void LfbFrameStart();
+    void LfbCockpitEntered();
     void LfbNoteDraw(int buffer, float x0, float y0, float x1, float y1);
     void LfbNoteClear(int buffer, int x0, int y0, int x1, int y1);
 
     // ---- game patches (widescreen) -----------------------------------------------------
     void PatchGame();
+
+    // ---- MAS archives (mas.cxx) ---------------------------------------------------------
+    bool MasRead(const std::string& path, const char* name, std::vector<u8>& data);
+    bool MasImage(const std::string& path, const char* name, int* w, int* h, std::vector<u8>& bgr); // 24-bit, top-down
 
     // helpers
     void ColorToFloat(GrColor_t c, float out[4]);

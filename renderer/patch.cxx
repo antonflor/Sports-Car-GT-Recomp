@@ -1,7 +1,11 @@
 // In-memory patches to Spcar.exe (nothing on disk changes).
-//  * Mouse: the game works in its logical 640x480 window space. GetCursorPos / ClipCursor are
-//    redirected so the cursor maps onto the scaled picture.
+//  * Mouse: the game works in its logical 640x480 window space. GetCursorPos / ClipCursor and
+//    the window's mouse messages are mapped onto the scaled picture.
+//  * Widescreen (Hor+): the game's view setup (0x48F6F0, v1.551) gets a wider horizontal field
+//    of view for full-screen views; the renderer stretches the 3D view to the screen width.
+//    Smaller views (the mirror) keep their field of view and are drawn in the 4:3 layout.
 #include "scgt.hxx"
+#include <math.h>
 
 namespace scgt
 {
@@ -105,6 +109,73 @@ namespace scgt
         return nullptr;
     }
 
+    // ---- widescreen -----------------------------------------------------------------------
+    // View::SetFov(float fovX, float fovY) — thiscall, radians; a negative fovY means "derive
+    // from fovX". Fields: +0x08 focal x, +0x0C focal y, +0x18 tan(fovX/2), +0x1C tan(fovY/2),
+    // +0x50 width, +0x54 height, +0x68 fovX in degrees, +0x6C fovY in degrees.
+    static const uintptr_t VIEW_SETFOV = 0x48F6F0;
+    static const u8 SETFOV_PROLOGUE[7] = { 0x57, 0x56, 0x55, 0x53, 0x83, 0xEC, 0x64 };
+    typedef void(__fastcall* SetFovFn)(u8* view, void* edx, float fovX, float fovY);
+    static SetFovFn origSetFov = nullptr;
+    static float hFactor = 1.0f; // widescreen factor: (screen aspect) / (4:3)
+
+    static void __fastcall HookSetFov(u8* view, void* edx, float fovX, float fovY)
+    {
+        void* caller = __builtin_return_address(0);
+        if (hFactor <= 1.0001f) { origSetFov(view, edx, fovX, fovY); return; }
+        if (!(fovY >= 0.0f)) fovY = fovX * 0.8038585186f; // the game's own derivation
+        const int w = *(int*)(view + 0x50);
+        const int h = *(int*)(view + 0x54);
+        const bool fullScreen = w >= out.logicalW * 9 / 10 && h >= out.logicalH * 9 / 10;
+        if (fullScreen)
+        {
+            // Hor+: same vertical view, horizontally wider by the screen's extra width
+            const float wide = 2.0f * atanf(tanf(fovX * 0.5f) * hFactor);
+            origSetFov(view, edx, wide, fovY);
+        }
+        else
+        {
+            // smaller views (rear-view mirror) are drawn in the 4:3 layout: unchanged
+            origSetFov(view, edx, fovX, fovY);
+        }
+        // keep the stored angles as the game set them (it re-derives views from them)
+        *(float*)(view + 0x68) = fovX * 57.29578018f;
+        *(float*)(view + 0x6C) = fovY * 57.29578018f;
+        if (cfg.Trace) Log("view %p %dx%d fov %.1f/%.1f deg%s from %p", view, w, h, fovX * 57.2958f, fovY * 57.2958f, fullScreen ? " (widened)" : "", caller);
+    }
+
+    static void PatchWidescreen()
+    {
+        const float aspect = (float)out.width / out.height;
+        hFactor = cfg.Widescreen ? aspect / (4.0f / 3.0f) : 1.0f;
+        if (hFactor < 1.0f) hFactor = 1.0f;
+        if (hFactor <= 1.0001f) return;
+        u8* target = (u8*)VIEW_SETFOV;
+        if (IsBadReadPtr(target, 8) || memcmp(target, SETFOV_PROLOGUE, sizeof(SETFOV_PROLOGUE)) != 0)
+        {
+            Log("widescreen: unknown Spcar.exe build, staying 4:3");
+            hFactor = 1.0f;
+            return;
+        }
+        // trampoline: the original prologue, then jump back past it
+        u8* tramp = (u8*)VirtualAlloc(nullptr, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        memcpy(tramp, SETFOV_PROLOGUE, 7);
+        tramp[7] = 0xE9;
+        *(int32_t*)(tramp + 8) = (int32_t)((target + 7) - (tramp + 12));
+        origSetFov = (SetFovFn)tramp;
+        DWORD old;
+        VirtualProtect(target, 7, PAGE_EXECUTE_READWRITE, &old);
+        target[0] = 0xE9;
+        *(int32_t*)(target + 1) = (int32_t)((u8*)&HookSetFov - (target + 5));
+        target[5] = 0x90;
+        target[6] = 0x90;
+        VirtualProtect(target, 7, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), target, 7);
+        out.viewScaleX = hFactor;
+        UpdateLayout();
+        Log("widescreen: Hor+ factor %.3f", hFactor);
+    }
+
     void PatchGame()
     {
         static bool done = false;
@@ -119,5 +190,6 @@ namespace scgt
         HookImport("USER32.dll", "SetCursorPos", (void*)HookSetCursorPos);
         Log("mouse hooks: GetCursorPos %d ClipCursor %d", a, b);
         HookWindow(gameWindow);
+        PatchWidescreen();
     }
 }

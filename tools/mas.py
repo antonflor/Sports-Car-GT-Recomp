@@ -20,9 +20,11 @@ Image entries (.BMP / .PCX) start with a 16-byte header, then the pixels:
 
     u32 width, u32 height
     u32 compressed                 1 = zlib stream follows, 0 = raw pixels follow
-    u32 paletted                   0 = 24-bit RGB (top-down, R,G,B order), 1 = 8-bit indexed (PCX)
+    u32 paletted                   0 = 24-bit colour (top-down, stored B,G,R), 1 = 8-bit indexed (PCX)
 
-Pure magenta (255, 0, 255) in RGB textures is the transparency colour key.
+Pure magenta (255, 0, 255) is the transparency colour key. When the game uploads a texture it
+converts it to RGB565 by truncation (R>>3, G>>2, B>>3) and turns the magenta value 0xF81F
+into 0x0000, which its Glide renderer keys out (grChromakeyValue 0).
 
 Usage:
     python mas.py list    <file.mas>
@@ -70,7 +72,7 @@ class Entry:
         return bool(h and h[2])
 
     def rgb(self):
-        """Decode an RGB texture -> (width, height, bytes)."""
+        """Decode a texture -> (width, height, bytes in the stored B,G,R order)."""
         w, h, compressed, _ = self.image_header()
         if compressed:
             raw = zlib.decompress(self.data[IMAGE.size:])
@@ -82,7 +84,7 @@ class Entry:
 
     @classmethod
     def from_rgb(cls, name, width, height, raw, compressed=True, level=6):
-        """Build a texture entry the way the game's own tools store them."""
+        """Build a texture entry from B,G,R pixel bytes, the way the game's own tools store them."""
         if len(raw) != width * height * 3:
             raise ValueError("pixel buffer size does not match dimensions")
         if compressed:
@@ -90,6 +92,15 @@ class Entry:
             return cls(name, width * height * 3, len(blob), 0, blob)
         blob = IMAGE.pack(width, height, 0, 0) + raw
         return cls(name, len(blob), 0, 0, blob)
+
+
+def game_rgb565(bgr):
+    """The 16-bit pixels the game uploads for a texture (bytes in B,G,R order, little endian out)."""
+    import numpy as np
+    o = np.frombuffer(bgr, np.uint8).reshape(-1, 3).astype(np.uint32)
+    v = (o[:, 2] >> 3) << 11 | (o[:, 1] >> 2) << 5 | (o[:, 0] >> 3)
+    v = np.where(v == 0xF81F, 0, v)
+    return v.astype("<u2").tobytes()
 
 
 def read(path):

@@ -149,6 +149,22 @@ namespace scgt
         if (!hwnd) hwnd = GetActiveWindow();
         if (!hwnd) hwnd = GetForegroundWindow();
         gameWindow = hwnd;
+
+        // work in real pixels on high-DPI screens (otherwise Windows scales the picture again)
+        static bool dpiSet = false;
+        if (!dpiSet)
+        {
+            dpiSet = true;
+            HMODULE user = GetModuleHandleA("user32.dll");
+            typedef BOOL(WINAPI * PCtx)(HANDLE);
+            typedef BOOL(WINAPI * PAware)(void);
+            auto ctx = (PCtx)GetProcAddress(user, "SetProcessDpiAwarenessContext");
+            if (!ctx || !ctx((HANDLE)-4)) // per-monitor v2
+            {
+                auto aware = (PAware)GetProcAddress(user, "SetProcessDPIAware");
+                if (aware) aware();
+            }
+        }
         out.logicalW = logicalW;
         out.logicalH = logicalH;
 
@@ -313,7 +329,34 @@ namespace scgt
         if (!dev) return;
         Flush();
         LfbFlush();
+        DrawCockpitSides();
+        if (!frameHas3D)
+        {
+            // menus are 4:3: keep the side (or top/bottom) bars black
+            D3DRECT bars[4];
+            int n = 0;
+            const LONG ox = (LONG)out.offsetX, oy = (LONG)out.offsetY;
+            if (ox > 0)
+            {
+                bars[n++] = { 0, 0, ox, out.height };
+                bars[n++] = { out.width - ox, 0, out.width, out.height };
+            }
+            if (oy > 0)
+            {
+                bars[n++] = { 0, 0, out.width, oy };
+                bars[n++] = { 0, out.height - oy, out.width, out.height };
+            }
+            if (n)
+            {
+                SetRenderBuffer(GR_BUFFER_BACKBUFFER);
+                dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+                dev->Clear(n, bars, D3DCLEAR_TARGET, 0, 0.0f, 0);
+            }
+        }
         Show(colorRT[backIdx]);
+        EndFrame();
+        hudCenterPrev.swap(hudCenter);
+        hudCenter.clear();
         backIdx ^= 1; // flip: the old front buffer becomes the back buffer, like a Voodoo
         currentTarget = -1;
         InvalidateState();
@@ -339,6 +382,7 @@ namespace scgt
         if (st.colorMaskRgb || st.colorMaskA) flags |= D3DCLEAR_TARGET;
         if (st.depthMask) flags |= D3DCLEAR_ZBUFFER;
         if (!flags) return;
+        NoteClear();
         float z;
         if (st.depthMode == GR_DEPTHBUFFER_ZBUFFER || st.depthMode == GR_DEPTHBUFFER_ZBUFFER_COMPARE_TO_BIAS)
             z = depthValue / 65535.0f;
@@ -374,13 +418,13 @@ namespace scgt
         DrawTexture(tex, buffer, x, y, w, h, 0, 0, 1, 1, keyed);
     }
 
-    void DrawTexture(IDirect3DTexture9* tex, int buffer, float x, float y, float w, float h, float u0, float v0, float u1, float v1, bool keyed)
+    void DrawTexture(IDirect3DTexture9* tex, int buffer, float x, float y, float w, float h, float u0, float v0, float u1, float v1, bool keyed, float shiftX)
     {
         if (!dev || !tex) return;
         Flush();
         SetRenderBuffer(buffer);
-        const float x0 = x * out.scaleX + out.offsetX, y0 = y * out.scaleY + out.offsetY;
-        const float x1 = (x + w) * out.scaleX + out.offsetX, y1 = (y + h) * out.scaleY + out.offsetY;
+        const float x0 = x * out.scaleX + out.offsetX + shiftX, y0 = y * out.scaleY + out.offsetY;
+        const float x1 = (x + w) * out.scaleX + out.offsetX + shiftX, y1 = (y + h) * out.scaleY + out.offsetY;
         const float v[4][6] = {
             { x0, y0, 0, 1, u0, v0 }, { x1, y0, 0, 1, u1, v0 }, { x0, y1, 0, 1, u0, v1 }, { x1, y1, 0, 1, u1, v1 } };
         dev->SetVertexShader(blitVS);

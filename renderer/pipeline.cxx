@@ -28,6 +28,32 @@ namespace scgt
     static IDirect3DTexture9* fogTex = nullptr;
     static IDirect3DTexture9* whiteTex = nullptr;
     static bool fogDirty = true;
+    // screen mapping of the current batch: the widened 3D view, or the 4:3 2D layer
+    enum { MAP_3D, MAP_2D, MAP_2D_LEFT, MAP_2D_RIGHT };
+    static int curMap = MAP_3D;
+    bool frameHas3D = false; // the current frame draws the 3D view (HUD anchoring applies)
+    bool cockpitView = false;
+    bool subView = false;
+    static bool drew3D = false;      // 3D geometry was drawn in this frame
+    static bool cockpitSeen = false; // a cockpit image was drawn in this frame
+    static int cockpitHold = 0;      // frames the cockpit mode lasts without a new cockpit image
+    // bounding box of the sub-view (mirror) geometry: this frame and the last
+    static float subX0 = 1e9f, subX1 = -1e9f, subPrevX0 = 1e9f, subPrevX1 = -1e9f;
+
+    void NoteCockpit()
+    {
+        if (!cockpitView) LfbCockpitEntered();
+        cockpitSeen = true;
+        cockpitView = true;
+        cockpitHold = 3;
+    }
+
+    void NoteClear()
+    {
+        if (drew3D) subView = true; // the main view is done: what follows is a smaller view
+    }
+    std::vector<HudBox> hudCenter, hudCenterPrev; // centred 2D polygons of this / the last frame
+    static bool zmodeCur = false;
     static float uScale = 1.0f / 256, vScale = 1.0f / 256;
 
     void InitPipeline()
@@ -233,6 +259,113 @@ namespace scgt
         return st.color.other == GR_COMBINE_OTHER_TEXTURE || st.alpha.other == GR_COMBINE_OTHER_TEXTURE || fac(st.color.factor) || fac(st.alpha.factor);
     }
 
+    static void SetMapConstants()
+    {
+        float sx = out.scaleX, ox = out.offsetX;
+        switch (curMap)
+        {
+        case MAP_3D: sx = out.view3DScaleX; ox = out.view3DOffsetX; break;
+        case MAP_2D_LEFT: ox = 0.0f; break;
+        case MAP_2D_RIGHT: ox = out.width - out.logicalW * out.scaleX; break;
+        default: break;
+        }
+        const float vs[3][4] = {
+            { sx, out.scaleY, ox, out.offsetY },
+            { 2.0f / out.width, 2.0f / out.height, zmodeCur ? 1.0f : 0.0f, 0 },
+            { uScale, vScale, 0, 0 } };
+        dev->SetVertexShaderConstantF(0, &vs[0][0], 3);
+    }
+
+    // How much of the screen this frame's 3D geometry covers: a race view fills it, a car
+    // preview in a menu doesn't.
+    static float covX0 = 1e9f, covX1 = -1e9f, covY0 = 1e9f, covY1 = -1e9f;
+
+    static void Cover(const Vtx* v, int n)
+    {
+        if (v[0].w >= 60000.0f) return; // 2D
+        drew3D = true;
+        if (subView)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                if (v[i].x < subX0) subX0 = v[i].x;
+                if (v[i].x > subX1) subX1 = v[i].x;
+            }
+            return; // the mirror doesn't count towards the main view's coverage
+        }
+        for (int i = 0; i < n; i++)
+        {
+            const float x = v[i].x < 0 ? 0 : (v[i].x > out.logicalW ? (float)out.logicalW : v[i].x);
+            const float y = v[i].y < 0 ? 0 : (v[i].y > out.logicalH ? (float)out.logicalH : v[i].y);
+            if (x < covX0) covX0 = x;
+            if (x > covX1) covX1 = x;
+            if (y < covY0) covY0 = y;
+            if (y > covY1) covY1 = y;
+        }
+    }
+
+    // Called once per frame (before present): decide whether the next frame is a race view.
+    void EndFrame()
+    {
+        frameHas3D = (covX1 - covX0) >= out.logicalW * 0.9f && (covY1 - covY0) >= out.logicalH * 0.4f;
+        covX0 = covY0 = 1e9f;
+        covX1 = covY1 = -1e9f;
+        subPrevX0 = subX0; subPrevX1 = subX1;
+        subX0 = 1e9f; subX1 = -1e9f;
+        if (!cockpitSeen && cockpitHold > 0) cockpitHold--;
+        cockpitView = cockpitHold > 0;
+        cockpitSeen = false;
+        drew3D = false;
+        subView = false;
+        LfbFrameStart();
+    }
+
+    // 2D elements (HUD) come with oow = 65535; everything else is the 3D view.
+    static int Classify(const Vtx* v, int n)
+    {
+        if (out.viewScaleX <= 1.0001f) return MAP_3D; // 4:3: one mapping for everything
+        bool flat = true;
+        float x0 = v[0].x, x1 = v[0].x;
+        for (int i = 0; i < n; i++)
+        {
+            if (v[i].w < 60000.0f) flat = false;
+            if (v[i].x < x0) x0 = v[i].x;
+            if (v[i].x > x1) x1 = v[i].x;
+        }
+        // menus, loading screens and 3D outside races (car previews) stay inside the 4:3 layout
+        if (!frameHas3D) return MAP_2D;
+        if (!flat && !subView) return MAP_3D;
+        if (!flat)
+        {
+            // rear-view mirror: drawn in the 4:3 layout so it stays inside its frame, and moved
+            // to the screen edge together with the frame when the HUD is anchored there
+            if (cockpitView || !cfg.HudToEdges) return MAP_2D;
+            const float sx0 = subPrevX0 < subX0 ? subPrevX0 : subX0;
+            const float sx1 = subPrevX1 > subX1 ? subPrevX1 : subX1;
+            const float c0 = sx0 < x0 ? sx0 : x0, c1 = sx1 > x1 ? sx1 : x1;
+            if (c1 < out.logicalW * 0.5f) return MAP_2D_LEFT;
+            if (c0 >= out.logicalW * 0.5f) return MAP_2D_RIGHT;
+            return MAP_2D;
+        }
+        if (x1 - x0 >= out.logicalW * 0.9f) return MAP_3D; // full-screen backdrop: fill the width
+        if (!cfg.HudToEdges || cockpitView) return MAP_2D; // the cockpit's needles stay on its gauges
+        if (x1 <= out.logicalW * 0.5f) return MAP_2D_LEFT;
+        if (x0 >= out.logicalW * 0.5f) return MAP_2D_RIGHT;
+        // a centred HUD element (e.g. the position bar): frame-buffer pixels drawn on it stay with it
+        float y0 = v[0].y, y1 = v[0].y;
+        for (int i = 1; i < n; i++) { if (v[i].y < y0) y0 = v[i].y; if (v[i].y > y1) y1 = v[i].y; }
+        if (hudCenter.size() < 64) hudCenter.push_back({ x0, y0, x1, y1 });
+        return MAP_2D;
+    }
+
+    static void UseMap(int m)
+    {
+        if (m == curMap) return;
+        Flush();
+        curMap = m;
+        if (!dirty) SetMapConstants();
+    }
+
     static void ApplyState()
     {
         SetRenderBuffer(st.renderBuffer);
@@ -343,11 +476,8 @@ namespace scgt
 
         ApplyConstants(bt);
 
-        const float vs[3][4] = {
-            { out.view3DScaleX, out.scaleY, out.view3DOffsetX, out.offsetY },
-            { 2.0f / out.width, 2.0f / out.height, zmode ? 1.0f : 0.0f, 0 },
-            { uScale, vScale, 0, 0 } };
-        dev->SetVertexShaderConstantF(0, &vs[0][0], 3);
+        zmodeCur = zmode;
+        SetMapConstants();
         dirty = false;
     }
 
@@ -401,6 +531,25 @@ namespace scgt
         }
     }
 
+    static void Emit(const Vtx& a, const Vtx& b, const Vtx& c)
+    {
+        if (Culled(a, b, c)) return;
+        float x0 = a.x, x1 = a.x, y0 = a.y, y1 = a.y;
+        const Vtx* p[2] = { &b, &c };
+        for (auto q : p)
+        {
+            if (q->x < x0) x0 = q->x;
+            if (q->x > x1) x1 = q->x;
+            if (q->y < y0) y0 = q->y;
+            if (q->y > y1) y1 = q->y;
+        }
+        LfbNoteDraw(st.renderBuffer, x0, y0, x1, y1);
+        batch.push_back(a);
+        batch.push_back(b);
+        batch.push_back(c);
+        if (batch.size() > 30000) Flush();
+    }
+
     void DrawTriangle(const GrVertex* a, const GrVertex* b, const GrVertex* c)
     {
         if (!dev) return;
@@ -409,25 +558,23 @@ namespace scgt
         Convert(a, &v[0]);
         Convert(b, &v[1]);
         Convert(c, &v[2]);
-        if (Culled(v[0], v[1], v[2])) return;
-        {
-            float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y;
-            for (int i = 1; i < 3; i++)
-            {
-                if (v[i].x < x0) x0 = v[i].x; if (v[i].x > x1) x1 = v[i].x;
-                if (v[i].y < y0) y0 = v[i].y; if (v[i].y > y1) y1 = v[i].y;
-            }
-            LfbNoteDraw(st.renderBuffer, x0, y0, x1, y1);
-        }
-        batch.push_back(v[0]);
-        batch.push_back(v[1]);
-        batch.push_back(v[2]);
-        if (batch.size() > 30000) Flush();
+        const int m = Classify(v, 3);
+        Cover(v, 3);
+        UseMap(m);
+        Emit(v[0], v[1], v[2]);
     }
 
     void DrawFan(int count, const GrVertex* const* verts)
     {
-        for (int i = 2; i < count; i++) DrawTriangle(verts[0], verts[i - 1], verts[i]);
+        if (!dev || count < 3) return;
+        Prepare();
+        static std::vector<Vtx> v;
+        v.resize(count);
+        for (int i = 0; i < count; i++) Convert(verts[i], &v[i]);
+        const int m = Classify(v.data(), count);
+        Cover(v.data(), count);
+        UseMap(m);
+        for (int i = 2; i < count; i++) Emit(v[0], v[i - 1], v[i]);
     }
 
     static void Quad(const GrVertex* src, float x0, float y0, float x1, float y1, float x2, float y2, float x3, float y3)

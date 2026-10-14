@@ -146,50 +146,249 @@ namespace scgt
         }
         if (cfg.Trace >= 3)
         {
-            u32 sr = 0, sg = 0, sb = 0; int n = 0, minx = 9999, miny = 9999;
+            u32 sr = 0, sg = 0, sb = 0; int n = 0, minx = 9999, miny = 9999, maxx = -1, maxy = -1;
             for (int row = 0; row < h; row++) for (int col = 0; col < w; col++)
             {
                 const u8* line = src + (size_t)(flip ? (h - 1 - row) : row) * stride;
                 const u32 px = bpp == 4 ? ((const u32*)line)[col] : ((const u16*)line)[col];
                 bool wr; const u32 c = ToArgb(px, mode, &wr);
-                if (wr) { sr += (c >> 16) & 255; sg += (c >> 8) & 255; sb += c & 255; n++; if (x + col < minx) minx = x + col; if (y + row < miny) miny = y + row; }
+                if (wr)
+                {
+                    sr += (c >> 16) & 255; sg += (c >> 8) & 255; sb += c & 255; n++;
+                    if (x + col < minx) minx = x + col;
+                    if (y + row < miny) miny = y + row;
+                    if (x + col > maxx) maxx = x + col;
+                    if (y + row > maxy) maxy = y + row;
+                }
             }
-            if (n && n < 5000) Log("  lfb write buffer %d (rt %d): %d px at %d,%d avg %u,%u,%u", buffer, BufferIndex(buffer), count, minx, miny, sr / n, sg / n, sb / n);
-            else Log("  lfb write buffer %d (rt %d): %d px", buffer, BufferIndex(buffer), count);
+            Log("  lfb write buffer %d (rt %d): %d px in %d,%d-%d,%d avg %u,%u,%u", buffer, BufferIndex(buffer), count, minx, miny, maxx, maxy, n ? sr / n : 0, n ? sg / n : 0, n ? sb / n : 0);
         }
     }
 
-    // Composite pending pixels of one buffer into its render target.
+    // Upload the pending pixels of a logical rectangle (inclusive) and draw them.
+    static void DrawRegion(int buffer, Shadow& s, int rx0, int ry0, int rx1, int ry1, float shiftX)
+    {
+        const int W = out.logicalW, H = out.logicalH;
+        // one texel of margin so filtering at the edges sees the real neighbours
+        const int x0 = rx0 > 0 ? rx0 - 1 : 0, y0 = ry0 > 0 ? ry0 - 1 : 0;
+        const int x1 = rx1 < W - 1 ? rx1 + 1 : W - 1, y1 = ry1 < H - 1 ? ry1 + 1 : H - 1;
+        RECT r = { x0, y0, x1 + 1, y1 + 1 };
+        D3DLOCKED_RECT lr;
+        bool all = true;
+        if (FAILED(lfbTex->LockRect(0, &lr, &r, 0))) return;
+        for (int y = y0; y <= y1; y++)
+        {
+            u32* d = (u32*)((u8*)lr.pBits + (size_t)(y - y0) * lr.Pitch);
+            const size_t base = (size_t)y * W;
+            for (int x = x0; x <= x1; x++)
+            {
+                const bool inside = x >= rx0 && x <= rx1 && y >= ry0 && y <= ry1;
+                const bool p = inside && s.pending[base + x] != 0;
+                d[x - x0] = (s.pix[base + x] & 0xffffff) | (p ? 0xff000000u : 0);
+                if (inside && !p) all = false;
+            }
+        }
+        lfbTex->UnlockRect(0);
+        for (int y = ry0; y <= ry1; y++)
+            for (int x = rx0; x <= rx1; x++) s.pending[(size_t)y * W + x] = 0;
+        const float u0 = (float)rx0 / lfbTexW, v0 = (float)ry0 / lfbTexH;
+        const float u1 = (float)(rx1 + 1) / lfbTexW, v1 = (float)(ry1 + 1) / lfbTexH;
+        DrawTexture(lfbTex, buffer, (float)rx0, (float)ry0, (float)(rx1 - rx0 + 1), (float)(ry1 - ry0 + 1), u0, v0, u1, v1, !all, shiftX);
+    }
+
+    // ---- cockpit sides ----------------------------------------------------------------------
+    // The dash view is a 4:3 cockpit image (MAS\DASH.MAS, PORAO<height>.BMP) that the game writes
+    // into the frame buffer. On a wide screen its outer columns (roof, side window, door panel)
+    // are stretched into the side areas; the see-through (magenta) parts show the wider 3D view.
+    static std::vector<u32> edgeCol[2]; // left / right column at logical height, ARGB, alpha 0 = see-through
+    static int edgeH = 0;
+    static bool edgeDirty = false, edgeTried = false;
+    static IDirect3DTexture9* edgeTex = nullptr;
+
+    // When the dash view starts, the static parts of the cockpit (written once) are repainted
+    // into both colour buffers, over anything drawn there before the cockpit was recognised.
+    static u32 frameStartGen = 0, repaintGen = 0;
+    static bool repaint[2] = {};
+    void LfbFrameStart() { frameStartGen = gen; }
+    void LfbCockpitEntered()
+    {
+        repaintGen = frameStartGen;
+        repaint[0] = repaint[1] = true;
+    }
+
+    static void LoadCockpitEdges()
+    {
+        const int H = out.logicalH;
+        if (edgeTried && edgeH == H) return;
+        edgeTried = true;
+        edgeH = H;
+        for (auto& c : edgeCol) c.assign(H, 0);
+        char name[32];
+        sprintf(name, "PORAO%d.BMP", H);
+        int w = 0, h = 0;
+        std::vector<u8> bgr;
+        if (!MasImage(gameDir + "MAS\\DASH.MAS", name, &w, &h, bgr))
+        {
+            Log("cockpit: %s not found, sides stay open", name);
+            return;
+        }
+        for (int side = 0; side < 2; side++)
+        {
+            // only the roof above the side window and the panel below it are extended; the
+            // window band in between (pillars cross it) stays open onto the wider 3D view
+            const int sx = side ? w - 1 : 0;
+            auto isKey = [&](int sy) { const u8* p = &bgr[((size_t)sy * w + sx) * 3]; return p[0] == 255 && p[1] == 0 && p[2] == 255; };
+            int first = h, last = -1;
+            for (int sy = 0; sy < h; sy++) if (isKey(sy)) { if (sy < first) first = sy; last = sy; }
+            for (int y = 0; y < H; y++)
+            {
+                const int sy = y * h / H;
+                const u8* p = &bgr[((size_t)sy * w + sx) * 3];
+                const bool open = sy >= first && sy <= last;
+                edgeCol[side][y] = open ? 0 : (0xff000000u | (u32)p[2] << 16 | (u32)p[1] << 8 | p[0]);
+            }
+        }
+        edgeDirty = true;
+        Log("cockpit: side extension from %s (%dx%d)", name, w, h);
+    }
+
+    void DrawCockpitSides()
+    {
+        const int H = out.logicalH;
+        if (!cockpitView || !frameHas3D || out.offsetX < 0.5f) return;
+        LoadCockpitEdges();
+        if (edgeCol[0].size() != (size_t)H) return;
+        int th = 64;
+        while (th < H) th *= 2;
+        if (!edgeTex && FAILED(dev->CreateTexture(2, th, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &edgeTex, nullptr))) return;
+        if (edgeDirty)
+        {
+            D3DLOCKED_RECT lr;
+            if (FAILED(edgeTex->LockRect(0, &lr, nullptr, 0))) return;
+            for (int y = 0; y < H; y++)
+            {
+                u32* d = (u32*)((u8*)lr.pBits + (size_t)y * lr.Pitch);
+                d[0] = edgeCol[0][y];
+                d[1] = edgeCol[1][y];
+            }
+            edgeTex->UnlockRect(0);
+            edgeDirty = false;
+        }
+        const float side = out.offsetX / out.scaleX; // side area width in logical units
+        const float v1 = (float)H / th;
+        DrawTexture(edgeTex, GR_BUFFER_BACKBUFFER, -side, 0, side, (float)H, 0.25f, 0, 0.25f, v1, true);
+        DrawTexture(edgeTex, GR_BUFFER_BACKBUFFER, (float)out.logicalW, 0, side, (float)H, 0.75f, 0, 0.75f, v1, true);
+    }
+
+    // Composite pending pixels of one buffer into its render target. During races on a wide
+    // screen, separate HUD blocks are anchored to the nearest screen edge.
     static void FlushBuffer(int buffer)
     {
         Shadow& s = shadows[BufferIndex(buffer)];
         if (s.x1 < 0 || s.pix.empty()) return;
         if (!EnsureTexture()) return;
         const int W = out.logicalW, H = out.logicalH;
-        // one texel of margin so filtering at the edges sees the real neighbours
-        const int x0 = s.x0 > 0 ? s.x0 - 1 : 0, y0 = s.y0 > 0 ? s.y0 - 1 : 0;
-        const int x1 = s.x1 < W - 1 ? s.x1 + 1 : W - 1, y1 = s.y1 < H - 1 ? s.y1 + 1 : H - 1;
-        RECT r = { x0, y0, x1 + 1, y1 + 1 };
-        D3DLOCKED_RECT lr;
-        bool all = true;
-        if (SUCCEEDED(lfbTex->LockRect(0, &lr, &r, 0)))
+        const float bar = out.offsetX; // width of each side bar of the 4:3 area
+        if (!(frameHas3D && bar > 0.5f && out.viewScaleX > 1.0001f))
         {
-            for (int y = y0; y <= y1; y++)
+            DrawRegion(buffer, s, s.x0, s.y0, s.x1, s.y1, 0.0f);
+        }
+        else
+        {
+            // connected blocks of 8x8 tiles holding pending pixels
+            const int T = 8, tw = (W + T - 1) / T, th = (H + T - 1) / T;
+            std::vector<int> label((size_t)tw * th, -1);
+            std::vector<u8> occ((size_t)tw * th, 0);
+            for (int y = s.y0; y <= s.y1; y++)
+                for (int x = s.x0; x <= s.x1; x++)
+                    if (s.pending[(size_t)y * W + x]) occ[(size_t)(y / T) * tw + x / T] = 1;
+            struct Box { int x0, y0, x1, y1; };
+            std::vector<Box> boxes;
+            std::vector<int> stack;
+            for (int t = 0; t < tw * th; t++)
             {
-                u32* d = (u32*)((u8*)lr.pBits + (size_t)(y - y0) * lr.Pitch);
-                const size_t base = (size_t)y * W;
-                for (int x = x0; x <= x1; x++)
+                if (!occ[t] || label[t] >= 0) continue;
+                Box bx = { tw, th, -1, -1 };
+                stack.assign(1, t);
+                label[t] = t;
+                while (!stack.empty())
                 {
-                    const bool p = s.pending[base + x] != 0;
-                    d[x - x0] = (s.pix[base + x] & 0xffffff) | (p ? 0xff000000u : 0);
-                    if (!p && x >= s.x0 && x <= s.x1 && y >= s.y0 && y <= s.y1) all = false;
-                    s.pending[base + x] = 0;
+                    const int c = stack.back();
+                    stack.pop_back();
+                    const int cx = c % tw, cy = c / tw;
+                    if (cx < bx.x0) bx.x0 = cx;
+                    if (cx > bx.x1) bx.x1 = cx;
+                    if (cy < bx.y0) bx.y0 = cy;
+                    if (cy > bx.y1) bx.y1 = cy;
+                    for (int dy = -1; dy <= 1; dy++)
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            const int nx = cx + dx, ny = cy + dy;
+                            if (nx < 0 || ny < 0 || nx >= tw || ny >= th) continue;
+                            const int n = ny * tw + nx;
+                            if (occ[n] && label[n] < 0) { label[n] = t; stack.push_back(n); }
+                        }
                 }
+                boxes.push_back(bx);
             }
-            lfbTex->UnlockRect(0);
-            const float u0 = (float)s.x0 / lfbTexW, v0 = (float)s.y0 / lfbTexH;
-            const float u1 = (float)(s.x1 + 1) / lfbTexW, v1 = (float)(s.y1 + 1) / lfbTexH;
-            DrawTexture(lfbTex, buffer, (float)s.x0, (float)s.y0, (float)(s.x1 - s.x0 + 1), (float)(s.y1 - s.y0 + 1), u0, v0, u1, v1, !all);
+            // blocks close to each other belong to one HUD element (e.g. a bar and its markers)
+            const int gap = 3; // tiles
+            for (bool merged = true; merged;)
+            {
+                merged = false;
+                for (size_t i = 0; i < boxes.size() && !merged; i++)
+                    for (size_t j = i + 1; j < boxes.size(); j++)
+                    {
+                        Box& A = boxes[i];
+                        const Box& B = boxes[j];
+                        if (A.x0 - gap <= B.x1 && B.x0 - gap <= A.x1 && A.y0 - gap <= B.y1 && B.y0 - gap <= A.y1)
+                        {
+                            A.x0 = A.x0 < B.x0 ? A.x0 : B.x0; A.y0 = A.y0 < B.y0 ? A.y0 : B.y0;
+                            A.x1 = A.x1 > B.x1 ? A.x1 : B.x1; A.y1 = A.y1 > B.y1 ? A.y1 : B.y1;
+                            boxes.erase(boxes.begin() + j);
+                            merged = true;
+                            break;
+                        }
+                    }
+            }
+            // a frame-buffer image covering most of the screen is the cockpit (dash view)
+            for (const Box& bx : boxes)
+                if ((bx.x1 - bx.x0 + 1) * T >= W * 9 / 10 && (bx.y1 - bx.y0 + 1) * T >= H * 2 / 5) NoteCockpit();
+            const int bi = BufferIndex(buffer);
+            if (cockpitView && repaint[bi])
+            {
+                repaint[bi] = false;
+                for (size_t i = 0; i < s.pix.size(); i++)
+                    if (s.mask[i] && s.pixGen[i] >= repaintGen) s.pending[i] = 1;
+                DrawRegion(buffer, s, 0, 0, W - 1, H - 1, 0.0f);
+                s.x0 = s.y0 = 1 << 30;
+                s.x1 = s.y1 = -1;
+                return;
+            }
+            for (const Box& bx : boxes)
+            {
+                const int rx0 = bx.x0 * T, ry0 = bx.y0 * T;
+                const int rx1 = (bx.x1 + 1) * T - 1 < W - 1 ? (bx.x1 + 1) * T - 1 : W - 1;
+                const int ry1 = (bx.y1 + 1) * T - 1 < H - 1 ? (bx.y1 + 1) * T - 1 : H - 1;
+                if (cockpitView)
+                {
+                    // the cockpit and everything on it stay 4:3 (the sides: DrawCockpitSides)
+                    DrawRegion(buffer, s, rx0, ry0, rx1, ry1, 0.0f);
+                    continue;
+                }
+                float shift = 0.0f;
+                if (cfg.HudToEdges)
+                {
+                    if (rx1 < W / 2) shift = -bar;
+                    else if (rx0 >= W / 2) shift = bar;
+                }
+                // pixels on a centred HUD polygon (position bar) stay centred with it
+                const float g = 12.0f;
+                for (const auto* list : { &hudCenter, &hudCenterPrev })
+                    for (const HudBox& hb : *list)
+                        if (rx0 - g <= hb.x1 && hb.x0 - g <= rx1 && ry0 - g <= hb.y1 && hb.y0 - g <= ry1) shift = 0.0f;
+                DrawRegion(buffer, s, rx0, ry0, rx1, ry1, shift);
+            }
         }
         s.x0 = s.y0 = 1 << 30;
         s.x1 = s.y1 = -1;
@@ -256,6 +455,7 @@ namespace scgt
         EnsureShadows();
         const int w = out.logicalW, h = out.logicalH;
         const bool write = (type & 1) != 0;
+        if (!write) NoteClear(); // the game reads back its finished main view before drawing the mirror
         int mode = writeMode;
         if (!write || mode == GR_LFBWRITEMODE_ANY) mode = GR_LFBWRITEMODE_565;
         const int bpp = Bytes(mode);
@@ -383,6 +583,7 @@ namespace scgt
 
     void LfbRelease()
     {
+        if (edgeTex) { edgeTex->Release(); edgeTex = nullptr; }
         if (lfbTex) { lfbTex->Release(); lfbTex = nullptr; }
         lfbTexW = lfbTexH = 0;
         for (auto& s : shadows) { s.pix.clear(); s.mask.clear(); s.pending.clear(); s.pixGen.clear(); s.tileGen.clear(); }
