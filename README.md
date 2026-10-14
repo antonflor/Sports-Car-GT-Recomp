@@ -14,7 +14,7 @@ The heart of it is **scgt2026**, a renderer written for this game. It replaces t
 
 ## Screenshots
 
-All at 1600×900.
+All captured from the game running on scgt2026 at 1600×900 (Sebring and Road Atlanta).
 
 ### Widescreen
 
@@ -30,7 +30,7 @@ The dash view in widescreen. The gauges, needles, gear readout and mirror stay e
 
 ### HD textures
 
-The same frame with the original textures and with the HD pack: sharper liveries, signs and track-side detail; asphalt and grass keep their grain.
+The same replay frame with the original textures and with the HD pack (zoomed in): sharper walls, signs and track-side detail.
 
 ![Original vs HD textures](docs/screenshots/hd-before-after.jpg)
 
