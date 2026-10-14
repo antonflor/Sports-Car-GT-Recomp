@@ -125,6 +125,8 @@ namespace scgt
     extern std::vector<HudBox> hudCenter, hudCenterPrev;
     bool ReadBuffer(int buffer, std::vector<u32>& pixels); // logical-size ARGB readback
     bool RestoreSaved(int buffer, int x0, int y0, int x1, int y1);
+    bool WantedWindowRect(RECT* r);
+    bool LfbBlockShift(float x0, float x1, float y, float* shift); // where a frame-buffer block around x0-x1 at row y was placed
 
     // ---- drawing -----------------------------------------------------------------------
     void DrawTriangle(const GrVertex* a, const GrVertex* b, const GrVertex* c);

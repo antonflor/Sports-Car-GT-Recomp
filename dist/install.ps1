@@ -166,6 +166,7 @@ foreach ($folder in @([Environment]::GetFolderPath("Desktop"), [Environment]::Ge
 
 Write-Host ""
 Write-Host "Done. Sports Car GT is installed in $GamePath" -ForegroundColor Green
-Write-Host "Start it from the 'Sports Car GT 2026' shortcut. In the first window, pick the 3Dfx video driver and click Play."
+Write-Host "Start it from the 'Sports Car GT 2026' shortcut. In the launcher, pick '3Dfx Voodoo' under Select Video Driver and click 'Play Sports Car'."
+Write-Host "In the game: Options > Graphics > 1024x768, E-Mapping and MIP Mapping on, for the sharpest picture."
 Write-Host "Settings (resolution, widescreen, anti-aliasing): $ini"
 if ($Host.Name -eq "ConsoleHost") { Read-Host "Press Enter to close" | Out-Null }

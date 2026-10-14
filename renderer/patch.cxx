@@ -59,6 +59,21 @@ namespace scgt
     static WNDPROC realWndProc = nullptr;
     static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
+        if (msg == WM_WINDOWPOSCHANGING && lp)
+        {
+            // the game sizes its window to the mode it runs (e.g. when a replay starts): keep ours
+            RECT r;
+            WINDOWPOS* pos = (WINDOWPOS*)lp;
+            if (WantedWindowRect(&r) && !(pos->flags & SWP_NOSIZE && pos->flags & SWP_NOMOVE) && pos->x > -30000 && !IsIconic(hwnd))
+            {
+                if (cfg.Trace && (pos->cx != r.right - r.left || pos->cy != r.bottom - r.top))
+                    Log("window resize %dx%d held at %dx%d", pos->cx, pos->cy, (int)(r.right - r.left), (int)(r.bottom - r.top));
+                pos->x = r.left;
+                pos->y = r.top;
+                pos->cx = r.right - r.left;
+                pos->cy = r.bottom - r.top;
+            }
+        }
         if (dev && msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL)
         {
             float x = ((short)LOWORD(lp) - out.offsetX) / out.scaleX;

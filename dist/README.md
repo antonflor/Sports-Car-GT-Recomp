@@ -28,9 +28,14 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -NoTextures               #
 
 ### First start
 
-The game opens with its launcher window. Pick the **3Dfx** video driver (that's scgt2026) and click **Play**.
+The game opens with its launcher window. Under **Select Video Driver** pick **3Dfx Voodoo** (that's scgt2026) and click **Play Sports Car**.
 
-In the game, **Options → Graphics → Resolution: 1024×768** gives sharper menus, fonts and HUD (the 3D view is always drawn at your monitor's resolution, whatever the game is set to).
+Recommended in **Options → Graphics** (they're saved with your player):
+
+- **Screen Resolution: 1024×768** — sharper menus, fonts, HUD and cockpit (the 3D view is always drawn at your monitor's resolution, whatever the game is set to)
+- **E-Mapping** on — reflections on the cars
+- **MIP Mapping** on
+- all detail levels on **Max**
 
 Tracks and cars unlock as you play, or type `isi-cheeseman` on the first screen, then `isi-tbone` on the Race Setup screen.
 

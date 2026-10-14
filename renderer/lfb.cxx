@@ -231,7 +231,22 @@ namespace scgt
     // into both colour buffers, over anything drawn there before the cockpit was recognised.
     static u32 frameStartGen = 0, repaintGen = 0;
     static bool repaint[2] = {};
-    void LfbFrameStart() { frameStartGen = gen; }
+    // frame-buffer blocks placed in this / the last frame, and the horizontal shift they got
+    struct Placed { int x0, y0, x1, y1; float shift; };
+    static std::vector<Placed> placed, placedPrev;
+    void LfbFrameStart()
+    {
+        frameStartGen = gen;
+        placedPrev.swap(placed);
+        placed.clear();
+    }
+    bool LfbBlockShift(float x0, float x1, float y, float* shift)
+    {
+        for (const auto* list : { &placed, &placedPrev })
+            for (const Placed& p : *list)
+                if (x0 >= p.x0 - 8 && x1 <= p.x1 + 9 && y >= p.y0 && y <= p.y1) { *shift = p.shift; return true; }
+        return false;
+    }
     void LfbCockpitEntered()
     {
         repaintGen = frameStartGen;
@@ -409,6 +424,7 @@ namespace scgt
                 for (const auto* list : { &hudCenter, &hudCenterPrev })
                     for (const HudBox& hb : *list)
                         if (rx0 - g <= hb.x1 && hb.x0 - g <= rx1 && ry0 - g <= hb.y1 && hb.y0 - g <= ry1) shift = 0.0f;
+                if (placed.size() < 64) placed.push_back({ rx0, ry0, rx1, ry1, shift });
                 DrawRegion(buffer, s, rx0, ry0, rx1, ry1, shift);
             }
         }

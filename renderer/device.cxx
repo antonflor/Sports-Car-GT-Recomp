@@ -2,6 +2,7 @@
 #include "scgt.hxx"
 #include "shaders.hxx"
 #include <d3dcompiler.h>
+#include "stb_image_write.h"
 
 namespace scgt
 {
@@ -20,6 +21,7 @@ namespace scgt
     static IDirect3DSurface9* readSurf = nullptr;
     static IDirect3DTexture9* savedTex = nullptr;   // full-resolution copy of a buffer as the game last read it
     static IDirect3DSurface9* savedSurf = nullptr;
+    static RECT wantRect = {};
     static bool savedValid = false;
     static IDirect3DSurface9* readSys = nullptr;
     static IDirect3DVertexShader9* blitVS = nullptr;
@@ -217,6 +219,7 @@ namespace scgt
         }
         out.width = w;
         out.height = h;
+        GetWindowRect(hwnd, &wantRect);
 
         pp = {};
         pp.BackBufferWidth = w;
@@ -288,6 +291,15 @@ namespace scgt
         }
     }
 
+    // The window size the renderer chose; the game's own window moves (e.g. when a replay
+    // starts) are held to it while the device is open.
+    bool WantedWindowRect(RECT* r)
+    {
+        if (!dev || wantRect.right <= wantRect.left) return false;
+        *r = wantRect;
+        return true;
+    }
+
     IDirect3DSurface9* TargetSurface(int buffer)
     {
         return buffer == GR_BUFFER_FRONTBUFFER ? colorRT[backIdx ^ 1] : colorRT[backIdx];
@@ -317,10 +329,39 @@ namespace scgt
         return false;
     }
 
+    static void DebugDump()
+    {
+        // Trace >= 5: every 200 frames, save the full-resolution frame as shown (debugging aid)
+        static unsigned n = 0;
+        if (cfg.Trace < 5 || (++n % 200) != 0) return;
+        IDirect3DSurface9* sys = nullptr;
+        if (FAILED(dev->CreateOffscreenPlainSurface(out.width, out.height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr))) return;
+        D3DLOCKED_RECT lr;
+        if (SUCCEEDED(dev->GetRenderTargetData(frontSurf, sys)) && SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY)))
+        {
+            std::vector<u8> rgb((size_t)out.width * out.height * 3);
+            for (int y = 0; y < out.height; y++)
+            {
+                const u32* row = (const u32*)((const u8*)lr.pBits + (size_t)y * lr.Pitch);
+                for (int x = 0; x < out.width; x++)
+                {
+                    u8* d = &rgb[((size_t)y * out.width + x) * 3];
+                    d[0] = (row[x] >> 16) & 255; d[1] = (row[x] >> 8) & 255; d[2] = row[x] & 255;
+                }
+            }
+            sys->UnlockRect();
+            char name[64];
+            sprintf(name, "frame_%05u.png", n);
+            stbi_write_png((gameDir + name).c_str(), out.width, out.height, 3, rgb.data(), out.width * 3);
+        }
+        sys->Release();
+    }
+
     static void Show(IDirect3DSurface9* src)
     {
         // resolve into the display copy, then to the swap chain
         dev->StretchRect(src, nullptr, frontSurf, nullptr, D3DTEXF_NONE);
+        DebugDump();
         IDirect3DSurface9* bb = nullptr;
         if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)))
         {
@@ -391,6 +432,7 @@ namespace scgt
         if (st.colorMaskRgb || st.colorMaskA) flags |= D3DCLEAR_TARGET;
         if (st.depthMask) flags |= D3DCLEAR_ZBUFFER;
         if (!flags) return;
+        if (cfg.Trace >= 4) Log("  clear buffer %d clip %d,%d-%d,%d flags %lx", st.renderBuffer, st.clipMinX, st.clipMinY, st.clipMaxX, st.clipMaxY, flags);
         NoteClear();
         float z;
         if (st.depthMode == GR_DEPTHBUFFER_ZBUFFER || st.depthMode == GR_DEPTHBUFFER_ZBUFFER_COMPARE_TO_BIAS)

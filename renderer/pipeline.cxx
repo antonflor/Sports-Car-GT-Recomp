@@ -48,9 +48,13 @@ namespace scgt
         cockpitHold = 3;
     }
 
+    static int mainPrims = 0; // 3D primitives of the main view in this frame
+
     void NoteClear()
     {
-        if (drew3D) subView = true; // the main view is done: what follows is a smaller view
+        // The main view is done: what follows is a smaller view (the rear-view mirror). A lone
+        // backdrop drawn before a depth clear (replays draw one before the scene) doesn't count.
+        if (drew3D && mainPrims >= 16) subView = true;
     }
     std::vector<HudBox> hudCenter, hudCenterPrev; // centred 2D polygons of this / the last frame
     static bool zmodeCur = false;
@@ -293,6 +297,7 @@ namespace scgt
             }
             return; // the mirror doesn't count towards the main view's coverage
         }
+        mainPrims++;
         for (int i = 0; i < n; i++)
         {
             const float x = v[i].x < 0 ? 0 : (v[i].x > out.logicalW ? (float)out.logicalW : v[i].x);
@@ -309,6 +314,7 @@ namespace scgt
     {
         const bool was = frameHas3D;
         frameHas3D = (covX1 - covX0) >= out.logicalW * 0.9f && (covY1 - covY0) >= out.logicalH * 0.4f;
+        if (cfg.Trace >= 4) Log("  coverage x %.0f-%.0f y %.0f-%.0f map3d %.3f/%.1f", covX0, covX1, covY0, covY1, out.view3DScaleX, out.view3DOffsetX);
         if (cfg.Trace && was != frameHas3D)
             Log("3D view %s (coverage x %.0f-%.0f y %.0f-%.0f)", frameHas3D ? "on" : "off", covX0, covX1, covY0, covY1);
         covX0 = covY0 = 1e9f;
@@ -316,10 +322,12 @@ namespace scgt
         subPrevX0 = subX0; subPrevX1 = subX1;
         subX0 = 1e9f; subX1 = -1e9f;
         if (!cockpitSeen && cockpitHold > 0) cockpitHold--;
+        if (cfg.Trace && cockpitView != (cockpitHold > 0)) Log("cockpit view %s", cockpitHold > 0 ? "on" : "off");
         cockpitView = cockpitHold > 0;
         cockpitSeen = false;
         drew3D = false;
         subView = false;
+        mainPrims = 0;
         LfbFrameStart();
     }
 
@@ -346,6 +354,11 @@ namespace scgt
             const float sx0 = subPrevX0 < subX0 ? subPrevX0 : subX0;
             const float sx1 = subPrevX1 > subX1 ? subPrevX1 : subX1;
             const float c0 = sx0 < x0 ? sx0 : x0, c1 = sx1 > x1 ? sx1 : x1;
+            // follow the frame-buffer frame drawn around it (replays merge it with their toolbar)
+            float ym = 0;
+            for (int i = 0; i < n; i++) ym += v[i].y;
+            float sh;
+            if (LfbBlockShift(c0, c1, ym / n, &sh)) return sh < 0 ? MAP_2D_LEFT : (sh > 0 ? MAP_2D_RIGHT : MAP_2D);
             if (c1 < out.logicalW * 0.5f) return MAP_2D_LEFT;
             if (c0 >= out.logicalW * 0.5f) return MAP_2D_RIGHT;
             return MAP_2D;
@@ -361,8 +374,28 @@ namespace scgt
         return MAP_2D;
     }
 
+    static float segX0 = 1e9f, segX1 = -1e9f, segY0 = 1e9f, segY1 = -1e9f, segW0 = 1e9f, segW1 = -1e9f; static int segN = 0;
+    static void SegNote(const Vtx* v, int n)
+    {
+        if (cfg.Trace < 4) return;
+        for (int i = 0; i < n; i++)
+        {
+            if (v[i].x < segX0) segX0 = v[i].x;
+            if (v[i].x > segX1) segX1 = v[i].x;
+            if (v[i].y < segY0) segY0 = v[i].y;
+            if (v[i].y > segY1) segY1 = v[i].y;
+            if (v[i].w < segW0) segW0 = v[i].w;
+            if (v[i].w > segW1) segW1 = v[i].w;
+        }
+        segN++;
+    }
     static void UseMap(int m)
     {
+        if (cfg.Trace >= 4 && m != curMap)
+        {
+            Log("  map %d -> %d (3d %d sub %d cockpit %d) after %d prims in %.0f,%.0f-%.0f,%.0f w %g-%g", curMap, m, (int)frameHas3D, (int)subView, (int)cockpitView, segN, segX0, segY0, segX1, segY1, segW0, segW1);
+            segX0 = segY0 = segW0 = 1e9f; segX1 = segY1 = segW1 = -1e9f; segN = 0;
+        }
         if (m == curMap) return;
         Flush();
         curMap = m;
@@ -564,6 +597,7 @@ namespace scgt
         const int m = Classify(v, 3);
         Cover(v, 3);
         UseMap(m);
+        SegNote(v, 3);
         Emit(v[0], v[1], v[2]);
     }
 
@@ -577,6 +611,7 @@ namespace scgt
         const int m = Classify(v.data(), count);
         Cover(v.data(), count);
         UseMap(m);
+        SegNote(v.data(), count);
         for (int i = 2; i < count; i++) Emit(v[0], v[i - 1], v[i]);
     }
 
