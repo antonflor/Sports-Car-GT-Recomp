@@ -313,20 +313,58 @@ namespace scgt
         dev->SetDepthStencilSurface(depth);
     }
 
+    void LfbDeviceReset(); // lfb.cxx: the render targets were recreated empty
+
+    // Reset the device after it was lost (screen lock, Ctrl+Alt+Del, a UAC prompt, a display
+    // mode change). Nothing may hold a default-pool resource during Reset, so the targets are
+    // unbound and released first, then recreated; everything else is managed and survives.
+    static bool ResetDevice()
+    {
+        for (DWORD i = 0; i < 8; i++) dev->SetTexture(i, nullptr);
+        IDirect3DSurface9* bb = nullptr;
+        if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)))
+        {
+            dev->SetRenderTarget(0, bb);
+            bb->Release();
+        }
+        dev->SetDepthStencilSurface(nullptr);
+        ReleaseTargets();
+        const HRESULT hr = dev->Reset(&pp);
+        if (FAILED(hr))
+        {
+            Log("device reset failed %08lx", (unsigned long)hr);
+            return false;
+        }
+        if (!CreateTargets())
+        {
+            Log("device reset: recreating render targets failed");
+            return false;
+        }
+        currentTarget = -1;
+        InvalidateState();
+        LfbDeviceReset();
+        Log("device reset");
+        return true;
+    }
+
     static bool HandleLost()
     {
         HRESULT hr = dev->TestCooperativeLevel();
         if (hr == D3D_OK) return true;
-        if (hr == D3DERR_DEVICELOST) return false;
-        if (hr == D3DERR_DEVICENOTRESET)
-        {
-            ReleaseTargets();
-            if (FAILED(dev->Reset(&pp))) return false;
-            CreateTargets();
-            InvalidateState();
-            return true;
-        }
+        if (hr == D3DERR_DEVICELOST) return false; // not yet: try again next frame
+        if (hr == D3DERR_DEVICENOTRESET) return ResetDevice();
         return false;
+    }
+
+    // debugging aid: run the device-lost recovery on demand (create "reset_now" in the game folder)
+    void TestDeviceReset()
+    {
+        if (!dev) return;
+        Flush();
+        dev->EndScene();
+        Log("test: forcing a device reset");
+        ResetDevice();
+        dev->BeginScene();
     }
 
     static void DebugDump()
@@ -370,7 +408,7 @@ namespace scgt
         }
         dev->EndScene();
         HRESULT hr = dev->Present(nullptr, nullptr, nullptr, nullptr);
-        if (hr == D3DERR_DEVICELOST) HandleLost();
+        if (hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET) HandleLost();
         dev->BeginScene();
     }
 

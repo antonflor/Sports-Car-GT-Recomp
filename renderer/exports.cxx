@@ -142,6 +142,12 @@ API void __stdcall grBufferSwap(int interval)
             cfg.TraceFrom = (int)frameNo + 1;
             DebugSnapshot(frameNo);
         }
+        const std::string r = gameDir + "reset_now";
+        if (GetFileAttributesA(r.c_str()) != INVALID_FILE_ATTRIBUTES)
+        {
+            DeleteFileA(r.c_str());
+            TestDeviceReset();
+        }
     }
 }
 

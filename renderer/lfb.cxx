@@ -623,6 +623,31 @@ namespace scgt
         }
     }
 
+    // The render targets were recreated empty: composite every pixel the game has written (the
+    // cockpit image is written once and would otherwise stay missing). Anything the game draws
+    // with triangles is drawn again over it in the next frame.
+    void LfbDeviceReset()
+    {
+        if (shadows[0].pix.empty()) return;
+        const int W = out.logicalW;
+        for (Shadow& s : shadows)
+        {
+            for (size_t i = 0; i < s.pix.size(); i++)
+            {
+                if (!s.mask[i]) continue;
+                s.pending[i] = 1;
+                const int x = (int)(i % W), y = (int)(i / W);
+                if (x < s.x0) s.x0 = x;
+                if (x > s.x1) s.x1 = x;
+                if (y < s.y0) s.y0 = y;
+                if (y > s.y1) s.y1 = y;
+                anyPending = true;
+            }
+        }
+        lastRead.clear();
+        repaint[0] = repaint[1] = true;
+    }
+
     void LfbRelease()
     {
         if (edgeTex) { edgeTex->Release(); edgeTex = nullptr; }
