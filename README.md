@@ -53,7 +53,9 @@ The same replay frame with the original textures and with the HD pack (zoomed in
 
 ## Install
 
-You need your own copy of the game (the CD or ISO) and the official 1.551 patch. The install kit and its instructions are in [`dist/`](dist/README.md): one double-click installs the game from your disc, patches it, and adds the renderer and HD textures.
+Download **`SportsCarGT2026-Kit-v1.0.0.zip`** from the [latest release](../../releases/latest), unzip it next to your Sports Car GT CD folder (or mount the ISO), and double-click **Install Sports Car GT 2026.cmd**. It installs the game from your disc to `C:\Games\Sports Car GT`, applies the official 1.551 patch, and adds the renderer and the HD textures. Full instructions and settings: [`dist/README.md`](dist/README.md).
+
+Already installed? `glide2x.dll` from the release is the renderer on its own: drop it into the game folder to update.
 
 ## Build
 
